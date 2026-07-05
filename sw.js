@@ -1,6 +1,6 @@
 // PayPay家計簿 Service Worker(http/httpsで配信した場合のみ使用されます)
 // キャッシュファーストで自分自身を保存し、完全オフラインで起動できるようにします。
-const CACHE = "ppb-v1";
+const CACHE = "ppb-v2";
 const ASSETS = ["./", "./index.html"];
 
 self.addEventListener("install", e => {

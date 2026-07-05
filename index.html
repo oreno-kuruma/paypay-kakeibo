@@ -135,10 +135,10 @@
 
   <div class="card">
     <label class="drop" id="dropZone">
-      <strong>CSVファイルを選択</strong>
+      <strong>取引履歴ファイルを選択</strong>
       タップして選択、またはここにドロップ<br>
-      (PayPayアプリの取引履歴CSV / UTF-8・Shift-JIS対応)
-      <input type="file" id="fileInput" accept=".csv,text/csv,text/plain">
+      (PayPayアプリの取引履歴 / CSV・Excel両対応)
+      <input type="file" id="fileInput" accept=".csv,.xlsx,text/csv,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
     </label>
     <div class="fileinfo" id="fileInfo"></div>
   </div>
@@ -152,6 +152,9 @@
       </div>
       <button class="copy-btn" id="copyTotalBtn">合計金額をコピー(フリマ売上充当 用)</button>
       <div class="note">マネーフォワードMEの収入「フリマ売上充当」欄に貼り付けてください。</div>
+      <label class="note" style="display:flex; align-items:center; gap:6px; margin-top:8px; cursor:pointer">
+        <input type="checkbox" id="ptToggle"> ポイントで支払った分を合計に含めない
+      </label>
       <div class="count-note" id="statsNote"></div>
     </div>
 
@@ -226,6 +229,7 @@ const LS = {
   learned: "ppb.learned.v1",
   cats:    "ppb.cats.v1",
   excl:    "ppb.excl.v1",
+  expt:    "ppb.expt.v1",
   person:  "ppb.person.v1",
   tx:      k => "ppb.tx.v1." + k,
   file:    k => "ppb.file.v1." + k,
@@ -260,6 +264,7 @@ let rules   = loadJSON(LS.rules, DEFAULT_RULES.slice());
 let learned = loadJSON(LS.learned, {});
 let cats    = loadJSON(LS.cats, DEFAULT_CATS.slice());
 let excl    = loadJSON(LS.excl, DEFAULT_EXCL.slice());
+let ptExclude = loadJSON(LS.expt, true); // ポイント充当分を合計から除くか
 let currentPerson = loadJSON(LS.person, PERSONS[0].key);
 if(!PERSONS.some(p => p.key === currentPerson)) currentPerson = PERSONS[0].key;
 
@@ -267,9 +272,8 @@ if(!PERSONS.some(p => p.key === currentPerson)) currentPerson = PERSONS[0].key;
 const txData = {};
 PERSONS.forEach(p => { txData[p.key] = loadJSON(LS.tx(p.key), []); });
 
-/* ================= CSV 読み込み(UTF-8 / Shift-JIS) ================= */
-async function readFileText(file){
-  const buf = await file.arrayBuffer();
+/* ================= ファイル読み込み(CSV: UTF-8/Shift-JIS、Excel: xlsx) ================= */
+function decodeText(buf){
   const bytes = new Uint8Array(buf);
   // UTF-8 BOM
   if(bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF){
@@ -280,6 +284,84 @@ async function readFileText(file){
   }catch(e){
     return new TextDecoder("shift-jis").decode(buf);
   }
+}
+
+// xlsx(zip形式)から先頭シートを2次元配列で取り出す(外部ライブラリ不使用)
+async function parseXlsxRows(buf){
+  if(typeof DecompressionStream === "undefined"){
+    throw new Error("この端末はExcel形式に未対応です(iOSを16.4以上に更新するか、CSV形式で書き出してください)");
+  }
+  const dv = new DataView(buf);
+  const u8 = new Uint8Array(buf);
+  let eocd = -1;
+  for(let i = u8.length - 22; i >= 0 && i >= u8.length - 22 - 65535; i--){
+    if(dv.getUint32(i, true) === 0x06054b50){ eocd = i; break; }
+  }
+  if(eocd < 0) throw new Error("Excelファイルを解析できません");
+  const count = dv.getUint16(eocd + 10, true);
+  let off = dv.getUint32(eocd + 16, true);
+  const entries = {};
+  for(let n = 0; n < count; n++){
+    if(dv.getUint32(off, true) !== 0x02014b50) break;
+    const nameLen = dv.getUint16(off + 28, true);
+    const extraLen = dv.getUint16(off + 30, true);
+    const cmtLen = dv.getUint16(off + 32, true);
+    entries[new TextDecoder().decode(u8.subarray(off + 46, off + 46 + nameLen))] = {
+      method: dv.getUint16(off + 10, true),
+      csize: dv.getUint32(off + 20, true),
+      lho: dv.getUint32(off + 42, true),
+    };
+    off += 46 + nameLen + extraLen + cmtLen;
+  }
+  async function extract(name){
+    const e = entries[name];
+    if(!e) return null;
+    const nl = dv.getUint16(e.lho + 26, true);
+    const el = dv.getUint16(e.lho + 28, true);
+    const data = u8.subarray(e.lho + 30 + nl + el, e.lho + 30 + nl + el + e.csize);
+    if(e.method === 0) return new TextDecoder().decode(data);
+    const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+    return await new Response(stream).text();
+  }
+  const tags = (node, name) => {
+    const els = node.getElementsByTagName(name);
+    if(els.length) return [...els];
+    return [...node.getElementsByTagName("*")].filter(el => el.localName === name);
+  };
+  const shared = [];
+  const ssXml = await extract("xl/sharedStrings.xml");
+  if(ssXml){
+    const doc = new DOMParser().parseFromString(ssXml, "application/xml");
+    tags(doc, "si").forEach(si => {
+      shared.push(tags(si, "t").map(t => t.textContent).join(""));
+    });
+  }
+  const sheetName = Object.keys(entries).filter(n => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).sort()[0];
+  const shXml = sheetName && await extract(sheetName);
+  if(!shXml) throw new Error("Excelファイルにシートが見つかりません");
+  const doc = new DOMParser().parseFromString(shXml, "application/xml");
+  const rows = [];
+  tags(doc, "row").forEach(rowEl => {
+    const row = [];
+    tags(rowEl, "c").forEach(c => {
+      const letters = (c.getAttribute("r") || "").replace(/\d+/g, "");
+      let ci = 0;
+      for(const ch of letters) ci = ci * 26 + (ch.charCodeAt(0) - 64);
+      ci = ci > 0 ? ci - 1 : row.length;
+      let v;
+      if(c.getAttribute("t") === "inlineStr"){
+        v = tags(c, "t").map(t => t.textContent).join("");
+      }else{
+        const vEl = tags(c, "v")[0];
+        v = vEl ? vEl.textContent : "";
+        if(c.getAttribute("t") === "s") v = shared[Number(v)] ?? "";
+      }
+      row[ci] = v;
+    });
+    for(let i = 0; i < row.length; i++) if(row[i] === undefined) row[i] = "";
+    rows.push(row);
+  });
+  return rows;
 }
 
 // クォート対応CSVパーサ
@@ -311,21 +393,36 @@ function parseCSV(text){
 
 function parseAmount(s){
   if(s == null) return 0;
-  const n = String(s).replace(/[,、\s円¥"']/g, "");
+  const n = String(s).replace(/[,、，\s円¥"']/g, "");
   if(n === "" || n === "-") return 0;
   const v = Number(n);
   return isFinite(v) ? v : 0;
 }
 
 function normalizeDate(s){
-  const m = String(s || "").match(/(\d{4})[\/\-.年](\d{1,2})[\/\-.月](\d{1,2})/);
+  const str = String(s || "").trim();
+  // Excelのシリアル日付(例: 46203.94...)に対応
+  if(/^\d{4,6}(\.\d+)?$/.test(str)){
+    const n = Number(str);
+    if(n > 30000 && n < 80000){
+      const d = new Date(Math.round((n - 25569) * 86400000));
+      return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2,"0") + "-" + String(d.getUTCDate()).padStart(2,"0");
+    }
+  }
+  const m = str.match(/(\d{4})[\/\-.年](\d{1,2})[\/\-.月](\d{1,2})/);
   if(!m) return "";
   return m[1] + "-" + String(m[2]).padStart(2,"0") + "-" + String(m[3]).padStart(2,"0");
 }
 
 // ヘッダ行から列位置を特定
 function mapColumns(header){
-  const find = (...names) => header.findIndex(h => names.some(n => String(h).replace(/\s/g,"").includes(n)));
+  // 「出金金額(円)」等の表記ゆれを吸収し、完全一致を優先(「海外出金金額」との誤マッチ防止)
+  const norm = h => String(h).replace(/[\s()（）円]/g, "");
+  const find = (...names) => {
+    let i = header.findIndex(h => names.includes(norm(h)));
+    if(i < 0) i = header.findIndex(h => names.some(n => norm(h).includes(n)));
+    return i;
+  };
   return {
     date:     find("取引日"),
     out:      find("出金金額"),
@@ -337,9 +434,8 @@ function mapColumns(header){
   };
 }
 
-// CSVテキスト → 取引配列(支出のみ)。除外件数等も返す
-function importCSVText(text){
-  const rows = parseCSV(text);
+// 行データ → 取引配列(支出のみ)。除外件数等も返す
+function importRows(rows){
   if(rows.length < 2) throw new Error("データ行がありません");
   const col = mapColumns(rows[0]);
   if(col.out < 0 || col.date < 0){
@@ -356,20 +452,31 @@ function importCSVText(text){
     if(excl.some(k => k && content.includes(k))){ excluded++; continue; }  // チャージ等を除外
     const date = normalizeDate(r[col.date]);
     const txno = (col.txno >= 0 ? (r[col.txno] || "") : "").trim();
+    const method = (col.method >= 0 ? (r[col.method] || "") : "").trim();
+    // ポイント併用払い:「PayPayポイント (2,077円), PayPay残高 (4,423円)」から充当額を取得
+    let point = 0;
+    if(/PayPayポイント/.test(method)){
+      const pm = method.match(/PayPayポイント\s*[(（]\s*([\d,，]+)\s*円/);
+      point = pm ? Math.min(parseAmount(pm[1]), out) : out; // 内訳なし=全額ポイント払い
+    }
     txs.push({
       id: txno || (date + "|" + merchant + "|" + out + "|" + i),
-      date, amount: out,
+      date, amount: out, point,
       merchant: merchant || content || "(名称なし)",
-      content,
-      method: (col.method >= 0 ? (r[col.method] || "") : "").trim(),
+      content, method,
     });
   }
   return {txs, excluded, incomeRows};
 }
 
 /* ================= 分類ロジック ================= */
+// 「PayPay残高カード」等は実店舗名が入らない汎用名のため、学習対象にしない
+function isGenericMerchant(m){
+  return /(残高カード|PayPayカード|あと払い|クレジット)/.test(m);
+}
 function categorize(tx){
-  if(Object.prototype.hasOwnProperty.call(learned, tx.merchant)) return learned[tx.merchant];
+  if(tx.cat) return tx.cat; // この取引だけの個別指定(カード払い用)
+  if(!isGenericMerchant(tx.merchant) && Object.prototype.hasOwnProperty.call(learned, tx.merchant)) return learned[tx.merchant];
   const target = tx.merchant + " " + tx.content;
   for(const r of rules){
     if(r.kw && target.includes(r.kw)) return r.cat;
@@ -395,7 +502,7 @@ function renderFileInfo(){
   const label = PERSONS.find(p => p.key === currentPerson).label;
   $("fileInfo").innerHTML = info
     ? `<b>${esc(label)}</b>:読み込み済み — ${esc(info.name)}(${info.count}件の支出 / ${esc(info.when)})`
-    : `<b>${esc(label)}</b>:まだCSVを読み込んでいません`;
+    : `<b>${esc(label)}</b>:まだ取引履歴を読み込んでいません`;
 }
 
 function renderResults(){
@@ -409,20 +516,25 @@ function renderResults(){
   // 分類
   const uncat = [];
   const byMonth = {}; // "2026-06" -> {cats:{}, total}
-  let grand = 0;
+  let grand = 0, ptSum = 0;
+  const eff = tx => ptExclude ? Math.max(0, tx.amount - (tx.point || 0)) : tx.amount;
   for(const tx of txs){
     const cat = categorize(tx) || "未分類";
     if(cat === "未分類") uncat.push(tx);
     const mon = tx.date ? tx.date.slice(0,7) : "日付不明";
     if(!byMonth[mon]) byMonth[mon] = {cats:{}, total:0};
-    byMonth[mon].cats[cat] = (byMonth[mon].cats[cat] || 0) + tx.amount;
-    byMonth[mon].total += tx.amount;
-    grand += tx.amount;
+    const a = eff(tx);
+    byMonth[mon].cats[cat] = (byMonth[mon].cats[cat] || 0) + a;
+    byMonth[mon].total += a;
+    grand += a;
+    ptSum += Math.min(tx.point || 0, tx.amount);
   }
 
   $("grandTotal").innerHTML = yen(grand) + "<small> 円</small>";
   $("copyTotalBtn").dataset.value = grand;
-  $("statsNote").textContent = `支出 ${txs.length} 件 / うち未分類 ${uncat.length} 件`;
+  $("ptToggle").checked = ptExclude;
+  $("statsNote").textContent = `支出 ${txs.length} 件 / うち未分類 ${uncat.length} 件` +
+    (ptSum ? ` / ポイント充当 ${yen(ptSum)} 円${ptExclude ? "(除外中)" : "(含む)"}` : "");
 
   // 未分類カード
   $("uncatCount").textContent = uncat.length ? `(${uncat.length}件)` : "";
@@ -430,17 +542,24 @@ function renderResults(){
     $("uncatList").innerHTML = `<div class="all-done">✓ すべての取引が分類済みです</div>`;
   }else{
     const opts = cats.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
-    $("uncatList").innerHTML = uncat.map(tx => `
+    $("uncatList").innerHTML = uncat.map(tx => {
+      const gen = isGenericMerchant(tx.merchant);
+      const pt = ptExclude && tx.point
+        ? `<span style="color:var(--sub);font-weight:400;font-size:12px">(ポイント${yen(Math.min(tx.point, tx.amount))}円充当済)</span> `
+        : "";
+      return `
       <div class="uc-card">
         <div class="uc-top">
           <span class="uc-merchant">${esc(tx.merchant)}</span>
-          <span class="uc-amount">${yen(tx.amount)} 円</span>
+          <span class="uc-amount">${pt}${yen(eff(tx))} 円</span>
         </div>
-        <div class="uc-meta">${esc(tx.date || "")} ${esc(tx.method || "")}</div>
-        <select data-merchant="${esc(tx.merchant)}">
+        <div class="uc-meta">${esc(tx.date || "")} ${esc(tx.content || "")}</div>
+        ${gen ? `<div class="uc-meta" style="color:var(--warn)">カード払いのため店名が記録されていません。PayPayアプリの明細で確認してください(選んだカテゴリはこの1件のみに適用)。</div>` : ""}
+        <select data-txid="${esc(tx.id)}" data-merchant="${esc(tx.merchant)}">
           <option value="">カテゴリを選択…</option>${opts}
         </select>
-      </div>`).join("");
+      </div>`;
+    }).join("");
   }
 
   // 月別カテゴリ表
@@ -515,14 +634,24 @@ $("personTabs").addEventListener("click", e => {
 async function handleFile(file){
   if(!file) return;
   try{
-    const text = await readFileText(file);
-    applyImport(file.name, text);
+    await importBuffer(file.name, await file.arrayBuffer());
   }catch(err){
     showToast("読み込みエラー:" + err.message);
   }
 }
-function applyImport(name, text){
-  const {txs, excluded} = importCSVText(text);
+async function importBuffer(name, buf){
+  const u8 = new Uint8Array(buf);
+  const rows = (u8[0] === 0x50 && u8[1] === 0x4B)  // 先頭"PK" = zip(xlsx)
+    ? await parseXlsxRows(buf)
+    : parseCSV(decodeText(buf));
+  applyImportRows(name, rows);
+}
+function applyImportRows(name, rows){
+  const {txs, excluded} = importRows(rows);
+  // 再読み込み時、前回この端末で個別指定したカテゴリを取引番号で引き継ぐ
+  const oldCat = {};
+  (txData[currentPerson] || []).forEach(t => { if(t.cat) oldCat[t.id] = t.cat; });
+  txs.forEach(t => { if(oldCat[t.id]) t.cat = oldCat[t.id]; });
   txData[currentPerson] = txs;
   saveJSON(LS.tx(currentPerson), txs);
   saveJSON(LS.file(currentPerson), {
@@ -545,11 +674,29 @@ dz.addEventListener("drop", e => handleFile(e.dataTransfer.files[0]));
 $("uncatList").addEventListener("change", e => {
   const sel = e.target.closest("select[data-merchant]");
   if(!sel || !sel.value) return;
-  learned[sel.dataset.merchant] = sel.value;
-  saveJSON(LS.learned, learned);
+  const m = sel.dataset.merchant;
+  if(isGenericMerchant(m)){
+    // カード払い等は店名が同一文字列になるため、この1件だけに適用
+    const tx = txData[currentPerson].find(t => t.id === sel.dataset.txid);
+    if(tx){
+      tx.cat = sel.value;
+      saveJSON(LS.tx(currentPerson), txData[currentPerson]);
+    }
+    showToast(`この1件を「${sel.value}」に分類しました`);
+  }else{
+    learned[m] = sel.value;
+    saveJSON(LS.learned, learned);
+    renderLearned();
+    showToast(`「${m}」→ ${sel.value} を学習しました`);
+  }
   renderResults();
-  renderLearned();
-  showToast(`「${sel.dataset.merchant}」→ ${sel.value} を学習しました`);
+});
+
+// ポイント充当分の扱い切り替え
+$("ptToggle").addEventListener("change", () => {
+  ptExclude = $("ptToggle").checked;
+  saveJSON(LS.expt, ptExclude);
+  renderResults();
 });
 
 // 合計コピー
@@ -725,8 +872,9 @@ function showToast(msg){
 /* ================= 初期化 ================= */
 renderAll();
 
-// テスト用フック(CSV文字列を直接流し込める)
-window._debugImport = applyImport;
+// テスト用フック
+window._debugImport = (name, text) => applyImportRows(name, parseCSV(text));
+window._debugImportUrl = async url => importBuffer(url, await (await fetch(url)).arrayBuffer());
 </script>
 </body>
 </html>
