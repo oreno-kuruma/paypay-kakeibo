@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="PayPay家計簿">
+<title>PayPay家計簿 — CSV仕分け・集計</title>
+<style>
+  :root{
+    --bg:#f4f5f7; --card:#ffffff; --text:#1a1a2e; --sub:#6b7280;
+    --accent:#d32f2f; --accent2:#1565c0; --line:#e5e7eb;
+    --ok:#2e7d32; --warn:#b26a00;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; padding:0;}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Hiragino Kaku Gothic ProN",Meiryo,sans-serif;
+    font-size:16px; line-height:1.5;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) calc(24px + env(safe-area-inset-bottom)) env(safe-area-inset-left);
+  }
+  .wrap{max-width:640px; margin:0 auto; padding:12px;}
+  h1{font-size:19px; margin:8px 4px 12px; display:flex; align-items:center; gap:8px;}
+  h1 .badge{font-size:11px; font-weight:normal; color:var(--sub); border:1px solid var(--line); border-radius:6px; padding:1px 6px;}
+  h2{font-size:15px; margin:0 0 8px; color:var(--text);}
+
+  /* 人物タブ */
+  .tabs{display:flex; background:#e2e4e9; border-radius:10px; padding:3px; margin-bottom:12px;}
+  .tabs button{
+    flex:1; border:0; background:transparent; border-radius:8px;
+    padding:10px 0; font-size:16px; font-weight:600; color:var(--sub); cursor:pointer;
+  }
+  .tabs button.active{background:#fff; color:var(--text); box-shadow:0 1px 3px rgba(0,0,0,.12);}
+
+  .card{background:var(--card); border-radius:12px; padding:14px; margin-bottom:12px; box-shadow:0 1px 2px rgba(0,0,0,.06);}
+
+  /* 読み込みゾーン */
+  .drop{
+    display:block;
+    border:2px dashed #c3c8d1; border-radius:12px; padding:20px 12px; text-align:center;
+    color:var(--sub); background:#fafbfc; cursor:pointer;
+  }
+  .drop.over{border-color:var(--accent2); background:#eef4fb; color:var(--accent2);}
+  .drop strong{color:var(--text); display:block; font-size:16px; margin-bottom:4px;}
+  .drop input{display:none;}
+  .fileinfo{font-size:13px; color:var(--sub); margin-top:8px; word-break:break-all;}
+  .fileinfo b{color:var(--text);}
+
+  /* 合計 */
+  .total-line{display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:6px;}
+  .total-amount{font-size:30px; font-weight:700; letter-spacing:.5px;}
+  .total-amount small{font-size:15px; font-weight:400; color:var(--sub);}
+  .copy-btn{
+    display:block; width:100%; margin-top:10px; padding:13px;
+    background:var(--accent2); color:#fff; border:0; border-radius:10px;
+    font-size:16px; font-weight:600; cursor:pointer;
+  }
+  .copy-btn:active{opacity:.8;}
+  .copy-btn.copied{background:var(--ok);}
+  .note{font-size:12px; color:var(--sub); margin-top:6px;}
+
+  table{width:100%; border-collapse:collapse; font-size:15px;}
+  th,td{padding:9px 6px; border-bottom:1px solid var(--line); text-align:left;}
+  td.num,th.num{text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap;}
+  tr.total-row td{font-weight:700; border-top:2px solid var(--text); border-bottom:0;}
+  tr.uncat td:first-child{color:var(--warn);}
+  .month-title{font-size:14px; color:var(--sub); margin:10px 2px 6px; font-weight:600;}
+
+  /* 未分類カード */
+  .uc-card{border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:8px; background:#fffdf5;}
+  .uc-top{display:flex; justify-content:space-between; align-items:baseline; gap:8px;}
+  .uc-merchant{font-weight:600; font-size:15px; word-break:break-all;}
+  .uc-amount{font-weight:700; white-space:nowrap; font-variant-numeric:tabular-nums;}
+  .uc-meta{font-size:12px; color:var(--sub); margin-top:2px;}
+  .uc-card select{
+    width:100%; margin-top:8px; padding:10px; font-size:16px;
+    border:1px solid #c3c8d1; border-radius:8px; background:#fff; color:var(--text);
+  }
+  .all-done{color:var(--ok); font-size:14px; text-align:center; padding:8px 0;}
+
+  /* 設定(ルール編集) */
+  details{margin-bottom:12px;}
+  details > summary{
+    list-style:none; cursor:pointer; background:var(--card); border-radius:12px;
+    padding:14px; font-weight:600; font-size:15px; box-shadow:0 1px 2px rgba(0,0,0,.06);
+    display:flex; justify-content:space-between; align-items:center;
+  }
+  details > summary::after{content:"▸"; color:var(--sub); transition:transform .15s;}
+  details[open] > summary::after{transform:rotate(90deg);}
+  details .card{border-radius:0 0 12px 12px; margin-top:2px;}
+  .rule-row{display:flex; gap:6px; margin-bottom:8px; align-items:center;}
+  .rule-row input[type=text], .rule-row select{
+    padding:9px; font-size:15px; border:1px solid #c3c8d1; border-radius:8px; background:#fff; color:var(--text); min-width:0;
+  }
+  .rule-row input[type=text]{flex:1.4;}
+  .rule-row select{flex:1;}
+  .del-btn{
+    border:0; background:#fdecea; color:var(--accent); border-radius:8px;
+    width:38px; height:38px; font-size:17px; cursor:pointer; flex-shrink:0;
+  }
+  .add-btn{
+    width:100%; padding:11px; border:1px dashed #c3c8d1; background:transparent;
+    border-radius:8px; color:var(--accent2); font-size:15px; cursor:pointer; margin-top:4px;
+  }
+  .chip-list{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;}
+  .chip{display:inline-flex; align-items:center; gap:6px; background:#eef1f5; border-radius:14px; padding:5px 10px; font-size:14px;}
+  .chip button{border:0; background:transparent; color:var(--sub); font-size:15px; cursor:pointer; padding:0;}
+  .inline-add{display:flex; gap:6px;}
+  .inline-add input{flex:1; padding:9px; font-size:15px; border:1px solid #c3c8d1; border-radius:8px; min-width:0;}
+  .inline-add button{padding:9px 14px; border:0; border-radius:8px; background:var(--accent2); color:#fff; font-size:15px; cursor:pointer; white-space:nowrap;}
+  .learned-row{display:flex; justify-content:space-between; align-items:center; gap:8px; padding:7px 0; border-bottom:1px solid var(--line); font-size:14px;}
+  .learned-row .m{word-break:break-all;}
+  .learned-row .c{color:var(--sub); white-space:nowrap;}
+  .clear-btn{
+    width:100%; padding:11px; border:1px solid #f0c4c4; background:#fff; color:var(--accent);
+    border-radius:10px; font-size:14px; cursor:pointer; margin-top:4px;
+  }
+  .empty-msg{color:var(--sub); font-size:14px; text-align:center; padding:12px 0;}
+  .count-note{font-size:13px; color:var(--sub); margin-top:8px;}
+  .toast{
+    position:fixed; left:50%; bottom:calc(30px + env(safe-area-inset-bottom)); transform:translateX(-50%);
+    background:#333; color:#fff; padding:10px 18px; border-radius:20px; font-size:14px;
+    opacity:0; pointer-events:none; transition:opacity .25s; z-index:50; white-space:nowrap;
+  }
+  .toast.show{opacity:.95;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>PayPay家計簿 <span class="badge">オフライン動作</span></h1>
+
+  <div class="tabs" id="personTabs"></div>
+
+  <div class="card">
+    <label class="drop" id="dropZone">
+      <strong>CSVファイルを選択</strong>
+      タップして選択、またはここにドロップ<br>
+      (PayPayアプリの取引履歴CSV / UTF-8・Shift-JIS対応)
+      <input type="file" id="fileInput" accept=".csv,text/csv,text/plain">
+    </label>
+    <div class="fileinfo" id="fileInfo"></div>
+  </div>
+
+  <div id="resultArea" style="display:none">
+
+    <div class="card">
+      <div class="total-line">
+        <h2 style="margin:0">支出合計(全期間)</h2>
+        <span class="total-amount" id="grandTotal">0<small> 円</small></span>
+      </div>
+      <button class="copy-btn" id="copyTotalBtn">合計金額をコピー(フリマ売上充当 用)</button>
+      <div class="note">マネーフォワードMEの収入「フリマ売上充当」欄に貼り付けてください。</div>
+      <div class="count-note" id="statsNote"></div>
+    </div>
+
+    <div class="card" id="uncatCard">
+      <h2>未分類の取引 <span id="uncatCount" style="color:var(--warn)"></span></h2>
+      <div class="note" style="margin:0 0 8px">カテゴリを選ぶと、同じ取引先は次回から自動で分類されます。</div>
+      <div id="uncatList"></div>
+    </div>
+
+    <div class="card">
+      <h2>カテゴリ別集計(月別)</h2>
+      <div id="summaryTables"></div>
+    </div>
+
+  </div>
+
+  <details>
+    <summary>分類ルールの編集</summary>
+    <div class="card">
+      <div class="note" style="margin:0 0 10px">取引先の名前に「キーワード」が含まれていたら、そのカテゴリに自動分類します。上にあるルールが優先されます。</div>
+      <div id="ruleList"></div>
+      <button class="add-btn" id="addRuleBtn">+ ルールを追加</button>
+    </div>
+  </details>
+
+  <details>
+    <summary>学習済みの取引先</summary>
+    <div class="card">
+      <div class="note" style="margin:0 0 10px">未分類画面で選択した取引先の一覧です。×で削除すると、次回また未分類になります。</div>
+      <div id="learnedList"></div>
+    </div>
+  </details>
+
+  <details>
+    <summary>カテゴリと除外条件の設定</summary>
+    <div class="card">
+      <h2>カテゴリ一覧</h2>
+      <div class="chip-list" id="catChips"></div>
+      <div class="inline-add">
+        <input type="text" id="newCatInput" placeholder="新しいカテゴリ名">
+        <button id="addCatBtn">追加</button>
+      </div>
+      <h2 style="margin-top:18px">支出から除外するキーワード</h2>
+      <div class="note" style="margin:0 0 8px">取引内容にこの言葉が含まれる行は、支出として集計しません(チャージ等)。</div>
+      <div class="chip-list" id="exclChips"></div>
+      <div class="inline-add">
+        <input type="text" id="newExclInput" placeholder="除外キーワード">
+        <button id="addExclBtn">追加</button>
+      </div>
+      <h2 style="margin-top:18px">データの削除</h2>
+      <button class="clear-btn" id="clearPersonBtn">この人の読み込み済みデータを消去</button>
+    </div>
+  </details>
+
+  <div class="note" style="text-align:center; margin-top:4px">
+    データはすべてこの端末内(ブラウザ)にのみ保存されます。外部への通信は行いません。
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+
+/* ================= 定数・ストレージ ================= */
+const PERSONS = [
+  {key:"kishi", label:"貴志"},
+  {key:"junko", label:"純子"},
+];
+const LS = {
+  rules:   "ppb.rules.v1",
+  learned: "ppb.learned.v1",
+  cats:    "ppb.cats.v1",
+  excl:    "ppb.excl.v1",
+  person:  "ppb.person.v1",
+  tx:      k => "ppb.tx.v1." + k,
+  file:    k => "ppb.file.v1." + k,
+};
+const DEFAULT_CATS = ["食費","日用品費","外食","交通費","医療費","衣服・美容","趣味・娯楽","通信費","その他"];
+const DEFAULT_RULES = [
+  {kw:"イオン", cat:"食費"},
+  {kw:"まいばすけっと", cat:"食費"},
+  {kw:"業務スーパー", cat:"食費"},
+  {kw:"セブン-イレブン", cat:"食費"},
+  {kw:"セブンイレブン", cat:"食費"},
+  {kw:"ファミリーマート", cat:"食費"},
+  {kw:"ローソン", cat:"食費"},
+  {kw:"ドラッグストア", cat:"日用品費"},
+  {kw:"マツモトキヨシ", cat:"日用品費"},
+  {kw:"ウエルシア", cat:"日用品費"},
+];
+const DEFAULT_EXCL = ["チャージ","入金"];
+
+function loadJSON(key, fallback){
+  try{
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : JSON.parse(v);
+  }catch(e){ return fallback; }
+}
+function saveJSON(key, val){
+  try{ localStorage.setItem(key, JSON.stringify(val)); }
+  catch(e){ showToast("保存に失敗しました(容量不足の可能性)"); }
+}
+
+let rules   = loadJSON(LS.rules, DEFAULT_RULES.slice());
+let learned = loadJSON(LS.learned, {});
+let cats    = loadJSON(LS.cats, DEFAULT_CATS.slice());
+let excl    = loadJSON(LS.excl, DEFAULT_EXCL.slice());
+let currentPerson = loadJSON(LS.person, PERSONS[0].key);
+if(!PERSONS.some(p => p.key === currentPerson)) currentPerson = PERSONS[0].key;
+
+// 人ごとの取引データ {key: [tx,...]}
+const txData = {};
+PERSONS.forEach(p => { txData[p.key] = loadJSON(LS.tx(p.key), []); });
+
+/* ================= CSV 読み込み(UTF-8 / Shift-JIS) ================= */
+async function readFileText(file){
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  // UTF-8 BOM
+  if(bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF){
+    return new TextDecoder("utf-8").decode(buf);
+  }
+  try{
+    return new TextDecoder("utf-8", {fatal:true}).decode(buf);
+  }catch(e){
+    return new TextDecoder("shift-jis").decode(buf);
+  }
+}
+
+// クォート対応CSVパーサ
+function parseCSV(text){
+  const rows = [];
+  let row = [], field = "", inQ = false;
+  for(let i = 0; i < text.length; i++){
+    const c = text[i];
+    if(inQ){
+      if(c === '"'){
+        if(text[i+1] === '"'){ field += '"'; i++; }
+        else inQ = false;
+      }else field += c;
+    }else{
+      if(c === '"') inQ = true;
+      else if(c === ","){ row.push(field); field = ""; }
+      else if(c === "\n" || c === "\r"){
+        if(c === "\r" && text[i+1] === "\n") i++;
+        row.push(field); field = "";
+        if(row.length > 1 || row[0] !== "") rows.push(row);
+        row = [];
+      }else field += c;
+    }
+  }
+  row.push(field);
+  if(row.length > 1 || row[0] !== "") rows.push(row);
+  return rows;
+}
+
+function parseAmount(s){
+  if(s == null) return 0;
+  const n = String(s).replace(/[,、\s円¥"']/g, "");
+  if(n === "" || n === "-") return 0;
+  const v = Number(n);
+  return isFinite(v) ? v : 0;
+}
+
+function normalizeDate(s){
+  const m = String(s || "").match(/(\d{4})[\/\-.年](\d{1,2})[\/\-.月](\d{1,2})/);
+  if(!m) return "";
+  return m[1] + "-" + String(m[2]).padStart(2,"0") + "-" + String(m[3]).padStart(2,"0");
+}
+
+// ヘッダ行から列位置を特定
+function mapColumns(header){
+  const find = (...names) => header.findIndex(h => names.some(n => String(h).replace(/\s/g,"").includes(n)));
+  return {
+    date:     find("取引日"),
+    out:      find("出金金額"),
+    in:       find("入金金額"),
+    content:  find("取引内容"),
+    merchant: find("取引先"),
+    method:   find("取引方法"),
+    txno:     find("取引番号"),
+  };
+}
+
+// CSVテキスト → 取引配列(支出のみ)。除外件数等も返す
+function importCSVText(text){
+  const rows = parseCSV(text);
+  if(rows.length < 2) throw new Error("データ行がありません");
+  const col = mapColumns(rows[0]);
+  if(col.out < 0 || col.date < 0){
+    throw new Error("PayPayの取引履歴CSVではないようです(「取引日」「出金金額」列が見つかりません)");
+  }
+  const txs = [];
+  let excluded = 0, incomeRows = 0;
+  for(let i = 1; i < rows.length; i++){
+    const r = rows[i];
+    const out = parseAmount(r[col.out]);
+    if(out <= 0){ incomeRows++; continue; }               // 出金がない行は対象外
+    const content  = (r[col.content]  || "").trim();
+    const merchant = (col.merchant >= 0 ? (r[col.merchant] || "") : "").trim();
+    if(excl.some(k => k && content.includes(k))){ excluded++; continue; }  // チャージ等を除外
+    const date = normalizeDate(r[col.date]);
+    const txno = (col.txno >= 0 ? (r[col.txno] || "") : "").trim();
+    txs.push({
+      id: txno || (date + "|" + merchant + "|" + out + "|" + i),
+      date, amount: out,
+      merchant: merchant || content || "(名称なし)",
+      content,
+      method: (col.method >= 0 ? (r[col.method] || "") : "").trim(),
+    });
+  }
+  return {txs, excluded, incomeRows};
+}
+
+/* ================= 分類ロジック ================= */
+function categorize(tx){
+  if(Object.prototype.hasOwnProperty.call(learned, tx.merchant)) return learned[tx.merchant];
+  const target = tx.merchant + " " + tx.content;
+  for(const r of rules){
+    if(r.kw && target.includes(r.kw)) return r.cat;
+  }
+  return null; // 未分類
+}
+
+/* ================= 描画 ================= */
+const $ = id => document.getElementById(id);
+const yen = n => n.toLocaleString("ja-JP");
+function esc(s){
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function renderTabs(){
+  $("personTabs").innerHTML = PERSONS.map(p =>
+    `<button class="${p.key === currentPerson ? "active" : ""}" data-person="${p.key}">${esc(p.label)}</button>`
+  ).join("");
+}
+
+function renderFileInfo(){
+  const info = loadJSON(LS.file(currentPerson), null);
+  const label = PERSONS.find(p => p.key === currentPerson).label;
+  $("fileInfo").innerHTML = info
+    ? `<b>${esc(label)}</b>:読み込み済み — ${esc(info.name)}(${info.count}件の支出 / ${esc(info.when)})`
+    : `<b>${esc(label)}</b>:まだCSVを読み込んでいません`;
+}
+
+function renderResults(){
+  const txs = txData[currentPerson];
+  if(!txs.length){
+    $("resultArea").style.display = "none";
+    return;
+  }
+  $("resultArea").style.display = "";
+
+  // 分類
+  const uncat = [];
+  const byMonth = {}; // "2026-06" -> {cats:{}, total}
+  let grand = 0;
+  for(const tx of txs){
+    const cat = categorize(tx) || "未分類";
+    if(cat === "未分類") uncat.push(tx);
+    const mon = tx.date ? tx.date.slice(0,7) : "日付不明";
+    if(!byMonth[mon]) byMonth[mon] = {cats:{}, total:0};
+    byMonth[mon].cats[cat] = (byMonth[mon].cats[cat] || 0) + tx.amount;
+    byMonth[mon].total += tx.amount;
+    grand += tx.amount;
+  }
+
+  $("grandTotal").innerHTML = yen(grand) + "<small> 円</small>";
+  $("copyTotalBtn").dataset.value = grand;
+  $("statsNote").textContent = `支出 ${txs.length} 件 / うち未分類 ${uncat.length} 件`;
+
+  // 未分類カード
+  $("uncatCount").textContent = uncat.length ? `(${uncat.length}件)` : "";
+  if(uncat.length === 0){
+    $("uncatList").innerHTML = `<div class="all-done">✓ すべての取引が分類済みです</div>`;
+  }else{
+    const opts = cats.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
+    $("uncatList").innerHTML = uncat.map(tx => `
+      <div class="uc-card">
+        <div class="uc-top">
+          <span class="uc-merchant">${esc(tx.merchant)}</span>
+          <span class="uc-amount">${yen(tx.amount)} 円</span>
+        </div>
+        <div class="uc-meta">${esc(tx.date || "")} ${esc(tx.method || "")}</div>
+        <select data-merchant="${esc(tx.merchant)}">
+          <option value="">カテゴリを選択…</option>${opts}
+        </select>
+      </div>`).join("");
+  }
+
+  // 月別カテゴリ表
+  const months = Object.keys(byMonth).sort();
+  $("summaryTables").innerHTML = months.map(mon => {
+    const m = byMonth[mon];
+    const order = cats.concat(["未分類"]).filter(c => m.cats[c]);
+    // カテゴリ一覧にない学習済みカテゴリも表示
+    Object.keys(m.cats).forEach(c => { if(!order.includes(c)) order.push(c); });
+    const rows = order.map(c =>
+      `<tr class="${c === "未分類" ? "uncat" : ""}"><td>${esc(c)}</td><td class="num">${yen(m.cats[c])} 円</td></tr>`
+    ).join("");
+    const title = mon === "日付不明" ? mon : mon.replace("-", "年") + "月";
+    return `<div class="month-title">${esc(title)}</div>
+      <table>
+        <tbody>${rows}
+        <tr class="total-row"><td>合計</td><td class="num">${yen(m.total)} 円</td></tr>
+        </tbody>
+      </table>`;
+  }).join("");
+}
+
+function renderRules(){
+  const opts = cat => cats.map(c =>
+    `<option value="${esc(c)}" ${c === cat ? "selected" : ""}>${esc(c)}</option>`
+  ).join("") + (cats.includes(cat) || !cat ? "" : `<option value="${esc(cat)}" selected>${esc(cat)}</option>`);
+  $("ruleList").innerHTML = rules.map((r, i) => `
+    <div class="rule-row">
+      <input type="text" value="${esc(r.kw)}" data-rule-kw="${i}" placeholder="キーワード">
+      <select data-rule-cat="${i}"><option value="">→ カテゴリ</option>${opts(r.cat)}</select>
+      <button class="del-btn" data-rule-del="${i}" aria-label="削除">✕</button>
+    </div>`).join("") || `<div class="empty-msg">ルールがありません</div>`;
+}
+
+function renderLearned(){
+  const keys = Object.keys(learned).sort((a,b) => a.localeCompare(b, "ja"));
+  $("learnedList").innerHTML = keys.length ? keys.map(k => `
+    <div class="learned-row">
+      <span class="m">${esc(k)}</span>
+      <span class="c">${esc(learned[k])}
+        <button class="del-btn" data-learned-del="${esc(k)}" style="width:30px;height:30px;margin-left:6px">✕</button>
+      </span>
+    </div>`).join("") : `<div class="empty-msg">まだ学習した取引先はありません</div>`;
+}
+
+function renderCats(){
+  $("catChips").innerHTML = cats.map(c =>
+    `<span class="chip">${esc(c)}<button data-cat-del="${esc(c)}">✕</button></span>`).join("");
+  $("exclChips").innerHTML = excl.map(k =>
+    `<span class="chip">${esc(k)}<button data-excl-del="${esc(k)}">✕</button></span>`).join("");
+}
+
+function renderAll(){
+  renderTabs();
+  renderFileInfo();
+  renderResults();
+  renderRules();
+  renderLearned();
+  renderCats();
+}
+
+/* ================= イベント ================= */
+$("personTabs").addEventListener("click", e => {
+  const b = e.target.closest("button[data-person]");
+  if(!b) return;
+  currentPerson = b.dataset.person;
+  saveJSON(LS.person, currentPerson);
+  renderAll();
+});
+
+// ファイル選択・ドロップ
+async function handleFile(file){
+  if(!file) return;
+  try{
+    const text = await readFileText(file);
+    applyImport(file.name, text);
+  }catch(err){
+    showToast("読み込みエラー:" + err.message);
+  }
+}
+function applyImport(name, text){
+  const {txs, excluded} = importCSVText(text);
+  txData[currentPerson] = txs;
+  saveJSON(LS.tx(currentPerson), txs);
+  saveJSON(LS.file(currentPerson), {
+    name, count: txs.length,
+    when: new Date().toLocaleString("ja-JP", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"}),
+  });
+  renderAll();
+  showToast(`支出 ${txs.length} 件を読み込みました(チャージ等 ${excluded} 件を除外)`);
+}
+$("fileInput").addEventListener("change", e => {
+  handleFile(e.target.files[0]);
+  e.target.value = "";
+});
+const dz = $("dropZone");
+["dragover","dragenter"].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add("over"); }));
+["dragleave","drop"].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove("over"); }));
+dz.addEventListener("drop", e => handleFile(e.dataTransfer.files[0]));
+
+// 未分類 → カテゴリ選択(学習)
+$("uncatList").addEventListener("change", e => {
+  const sel = e.target.closest("select[data-merchant]");
+  if(!sel || !sel.value) return;
+  learned[sel.dataset.merchant] = sel.value;
+  saveJSON(LS.learned, learned);
+  renderResults();
+  renderLearned();
+  showToast(`「${sel.dataset.merchant}」→ ${sel.value} を学習しました`);
+});
+
+// 合計コピー
+$("copyTotalBtn").addEventListener("click", async () => {
+  const v = $("copyTotalBtn").dataset.value || "0";
+  const ok = await copyText(v);
+  const btn = $("copyTotalBtn");
+  if(ok){
+    btn.classList.add("copied");
+    btn.textContent = `✓ ${yen(Number(v))} 円 をコピーしました`;
+    setTimeout(() => {
+      btn.classList.remove("copied");
+      btn.textContent = "合計金額をコピー(フリマ売上充当 用)";
+    }, 2000);
+  }else{
+    showToast("コピーできませんでした。長押しで選択してください:" + v);
+  }
+});
+async function copyText(text){
+  try{
+    await navigator.clipboard.writeText(text);
+    return true;
+  }catch(e){
+    try{
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.cssText = "position:fixed;opacity:0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    }catch(e2){ return false; }
+  }
+}
+
+// ルール編集
+$("ruleList").addEventListener("input", e => {
+  const kwEl = e.target.closest("[data-rule-kw]");
+  const catEl = e.target.closest("[data-rule-cat]");
+  if(kwEl) rules[Number(kwEl.dataset.ruleKw)].kw = kwEl.value.trim();
+  if(catEl) rules[Number(catEl.dataset.ruleCat)].cat = catEl.value;
+  saveJSON(LS.rules, rules);
+  renderResults();
+});
+$("ruleList").addEventListener("click", e => {
+  const del = e.target.closest("[data-rule-del]");
+  if(!del) return;
+  rules.splice(Number(del.dataset.ruleDel), 1);
+  saveJSON(LS.rules, rules);
+  renderRules();
+  renderResults();
+});
+$("addRuleBtn").addEventListener("click", () => {
+  rules.push({kw:"", cat:cats[0] || ""});
+  saveJSON(LS.rules, rules);
+  renderRules();
+  const inputs = document.querySelectorAll("[data-rule-kw]");
+  if(inputs.length) inputs[inputs.length - 1].focus();
+});
+
+// 学習済み削除
+$("learnedList").addEventListener("click", e => {
+  const del = e.target.closest("[data-learned-del]");
+  if(!del) return;
+  delete learned[del.dataset.learnedDel];
+  saveJSON(LS.learned, learned);
+  renderLearned();
+  renderResults();
+});
+
+// カテゴリ追加・削除
+$("addCatBtn").addEventListener("click", () => {
+  const v = $("newCatInput").value.trim();
+  if(!v) return;
+  if(!cats.includes(v)) cats.push(v);
+  $("newCatInput").value = "";
+  saveJSON(LS.cats, cats);
+  renderCats(); renderRules(); renderResults();
+});
+$("catChips").addEventListener("click", e => {
+  const del = e.target.closest("[data-cat-del]");
+  if(!del) return;
+  cats = cats.filter(c => c !== del.dataset.catDel);
+  saveJSON(LS.cats, cats);
+  renderCats(); renderRules(); renderResults();
+});
+
+// 除外キーワード
+$("addExclBtn").addEventListener("click", () => {
+  const v = $("newExclInput").value.trim();
+  if(!v) return;
+  if(!excl.includes(v)) excl.push(v);
+  $("newExclInput").value = "";
+  saveJSON(LS.excl, excl);
+  renderCats();
+  showToast("次回のCSV読み込みから適用されます");
+});
+$("exclChips").addEventListener("click", e => {
+  const del = e.target.closest("[data-excl-del]");
+  if(!del) return;
+  excl = excl.filter(k => k !== del.dataset.exclDel);
+  saveJSON(LS.excl, excl);
+  renderCats();
+  showToast("次回のCSV読み込みから適用されます");
+});
+
+// データ消去
+$("clearPersonBtn").addEventListener("click", () => {
+  const label = PERSONS.find(p => p.key === currentPerson).label;
+  if(!confirm(`${label} の読み込み済みデータを消去しますか?\n(ルールや学習内容は残ります)`)) return;
+  txData[currentPerson] = [];
+  localStorage.removeItem(LS.tx(currentPerson));
+  localStorage.removeItem(LS.file(currentPerson));
+  renderAll();
+});
+
+/* ================= トースト ================= */
+let toastTimer = null;
+function showToast(msg){
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 2500);
+}
+
+/* ================= PWA(アイコン・manifest・SW) ================= */
+(function setupPWA(){
+  try{
+    // アイコンをcanvasで生成(単一ファイルで完結させるため)
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = 180;
+    const ctx = cv.getContext("2d");
+    ctx.fillStyle = "#d32f2f";
+    ctx.fillRect(0, 0, 180, 180);
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 76px -apple-system, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("P¥", 90, 84);
+    ctx.font = "bold 26px -apple-system, sans-serif";
+    ctx.fillText("家計簿", 90, 142);
+    const icon = cv.toDataURL("image/png");
+
+    const touchIcon = document.createElement("link");
+    touchIcon.rel = "apple-touch-icon";
+    touchIcon.href = icon;
+    document.head.appendChild(touchIcon);
+
+    const manifest = {
+      name: "PayPay家計簿",
+      short_name: "PayPay家計簿",
+      display: "standalone",
+      start_url: ".",
+      background_color: "#f4f5f7",
+      theme_color: "#d32f2f",
+      icons: [{src: icon, sizes: "180x180", type: "image/png"}],
+    };
+    const mlink = document.createElement("link");
+    mlink.rel = "manifest";
+    mlink.href = "data:application/manifest+json," + encodeURIComponent(JSON.stringify(manifest));
+    document.head.appendChild(mlink);
+
+    // Service Worker はhttp(s)配信時のみ有効(file://やFilesアプリから開いた場合は
+    // そもそもネットワークを使わないため、SWなしでもオフラインで動作します)
+    if("serviceWorker" in navigator && location.protocol.startsWith("http")){
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    }
+  }catch(e){ /* PWA装飾は失敗しても本体機能に影響なし */ }
+})();
+
+/* ================= 初期化 ================= */
+renderAll();
+
+// テスト用フック(CSV文字列を直接流し込める)
+window._debugImport = applyImport;
+</script>
+</body>
+</html>
